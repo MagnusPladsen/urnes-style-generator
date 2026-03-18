@@ -2,10 +2,18 @@ import { test, expect, describe } from 'bun:test'
 import type { UrnesElement } from '../../src/core/types.ts'
 import { assignCrossings, createInterlaceGaps } from '../../src/interlace/weave.ts'
 import { pathFromPoints } from '../../src/core/bezier.ts'
+import { generateRibbon } from '../../src/core/ribbon.ts'
+
+const SAMPLE_COUNT = 40
+
+function withRibbon(el: UrnesElement): UrnesElement {
+  el.ribbon = generateRibbon(el.spine, el.widthProfile, SAMPLE_COUNT)
+  return el
+}
 
 function makeCrossingElements(): UrnesElement[] {
   // Two paths that cross each other
-  const elementA: UrnesElement = {
+  const elementA: UrnesElement = withRibbon({
     id: 'serpent-0',
     type: 'serpent',
     spine: pathFromPoints([
@@ -13,9 +21,9 @@ function makeCrossingElements(): UrnesElement[] {
       { x: 100, y: 100 },
     ]),
     widthProfile: [4, 6, 4],
-  }
+  })
 
-  const elementB: UrnesElement = {
+  const elementB: UrnesElement = withRibbon({
     id: 'serpent-1',
     type: 'serpent',
     spine: pathFromPoints([
@@ -23,7 +31,7 @@ function makeCrossingElements(): UrnesElement[] {
       { x: 100, y: 0 },
     ]),
     widthProfile: [4, 6, 4],
-  }
+  })
 
   return [elementA, elementB]
 }
@@ -144,7 +152,7 @@ describe('assignCrossings', () => {
 describe('createInterlaceGaps', () => {
   test('elements with no crossings return single segment', () => {
     const elements = [
-      {
+      withRibbon({
         id: 'vine-0',
         type: 'vine' as const,
         spine: pathFromPoints([
@@ -152,22 +160,22 @@ describe('createInterlaceGaps', () => {
           { x: 100, y: 100 },
         ]),
         widthProfile: [2, 3, 2],
-      },
+      }),
     ]
 
-    const gapMap = createInterlaceGaps(elements, [], 6)
+    const gapMap = createInterlaceGaps(elements, [], 6, SAMPLE_COUNT)
 
     expect(gapMap.has('vine-0')).toBe(true)
-    const data = gapMap.get('vine-0')!
-    expect(data.segments.length).toBe(1)
-    expect(data.segments[0]!.length).toBeGreaterThan(0)
+    const segments = gapMap.get('vine-0')!
+    expect(segments.length).toBe(1)
+    expect(segments[0]!.endIdx - segments[0]!.startIdx).toBeGreaterThan(0)
   })
 
   test('elements with under crossings have gaps', () => {
     const elements = makeCrossingElements()
     const crossings = assignCrossings(elements)
 
-    const gapMap = createInterlaceGaps(elements, crossings, 10)
+    const gapMap = createInterlaceGaps(elements, crossings, 10, SAMPLE_COUNT)
 
     // Both elements should be in the map
     expect(gapMap.has('serpent-0')).toBe(true)
@@ -175,8 +183,8 @@ describe('createInterlaceGaps', () => {
 
     // The "under" element should have more than one segment (gap creates a break)
     let hasGap = false
-    for (const [, data] of gapMap) {
-      if (data.segments.length > 1) {
+    for (const [, segments] of gapMap) {
+      if (segments.length > 1) {
         hasGap = true
         break
       }
@@ -188,21 +196,21 @@ describe('createInterlaceGaps', () => {
     const elements = makeCrossingElements()
     const crossings = assignCrossings(elements)
 
-    const gapMapSmall = createInterlaceGaps(elements, crossings, 2)
-    const gapMapLarge = createInterlaceGaps(elements, crossings, 20)
+    const gapMapSmall = createInterlaceGaps(elements, crossings, 2, SAMPLE_COUNT)
+    const gapMapLarge = createInterlaceGaps(elements, crossings, 20, SAMPLE_COUNT)
 
-    // With a large gap, "under" segments should have fewer total points
-    let smallTotalPoints = 0
-    let largeTotalPoints = 0
+    // With a large gap, "under" segments should cover fewer total indices
+    let smallTotal = 0
+    let largeTotal = 0
 
-    for (const [, data] of gapMapSmall) {
-      for (const seg of data.segments) smallTotalPoints += seg.length
+    for (const [, segments] of gapMapSmall) {
+      for (const seg of segments) smallTotal += seg.endIdx - seg.startIdx
     }
-    for (const [, data] of gapMapLarge) {
-      for (const seg of data.segments) largeTotalPoints += seg.length
+    for (const [, segments] of gapMapLarge) {
+      for (const seg of segments) largeTotal += seg.endIdx - seg.startIdx
     }
 
     // Larger gaps remove more points overall
-    expect(largeTotalPoints).toBeLessThanOrEqual(smallTotalPoints)
+    expect(largeTotal).toBeLessThanOrEqual(smallTotal)
   })
 })

@@ -11,12 +11,8 @@ export function composePanel(rng: Rng, config: GeneratorConfig): UrnesElement[] 
   const bounds = { width: config.width, height: config.height }
   const elements: UrnesElement[] = []
 
-  // 1. Generate vines first (background layer)
-  if (config.elements.vines) {
-    const vineCount = Math.ceil(config.complexity / 2)
-    const vines = generateVines(rng, bounds, vineCount)
-    elements.push(...vines)
-  }
+  // Urnes style: open interlacing with visible background — minimal fill elements
+  // Vines omitted to match authentic sparse Urnes aesthetic
 
   // 2. Generate secondary serpents
   for (let i = 0; i < config.elements.serpents; i++) {

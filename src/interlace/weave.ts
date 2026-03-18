@@ -77,72 +77,52 @@ export function assignCrossings(elements: UrnesElement[]): Crossing[] {
 }
 
 /**
- * For each element, split its ribbon points at crossing locations.
- * At "under" crossings, create a gap by removing points around the crossing.
+ * Index range for a ribbon segment: [startIdx, endIdx) into the ribbon arrays.
+ */
+export interface RibbonSegment {
+  startIdx: number
+  endIdx: number
+  isOver: boolean
+}
+
+/**
+ * For each element, compute index ranges into its ribbon arrays,
+ * splitting at crossing locations with gaps at "under" crossings.
  */
 export function createInterlaceGaps(
   elements: UrnesElement[],
   crossings: Crossing[],
-  gapSize: number
-): Map<string, { segments: Point[][]; isOver: boolean[] }> {
-  const result = new Map<string, { segments: Point[][]; isOver: boolean[] }>()
+  gapSize: number,
+  ribbonSampleCount: number
+): Map<string, RibbonSegment[]> {
+  const result = new Map<string, RibbonSegment[]>()
 
   for (const el of elements) {
-    // Get all crossings relevant to this element
-    const elCrossings: Array<{ param: number; isOver: boolean; point: Point }> = []
-
-    for (const c of crossings) {
-      if (c.pathAId === el.id) {
-        elCrossings.push({
-          param: c.paramA,
-          isOver: c.overPath === 'A',
-          point: c.point,
-        })
-      } else if (c.pathBId === el.id) {
-        elCrossings.push({
-          param: c.paramB,
-          isOver: c.overPath === 'B',
-          point: c.point,
-        })
-      }
-    }
-
-    // Sort crossings by param
-    elCrossings.sort((a, b) => a.param - b.param)
-
-    // Get spine points for this element
-    const spine = el.spine
-    if (spine.segments.length === 0) {
-      result.set(el.id, { segments: [[]], isOver: [true] })
+    if (!el.ribbon || el.spine.segments.length === 0) {
+      result.set(el.id, [{ startIdx: 0, endIdx: 0, isOver: true }])
       continue
     }
 
-    // Sample spine points at regular intervals
-    const sampleCount = 100
-    const spinePoints: Point[] = []
-    for (let i = 0; i <= sampleCount; i++) {
-      const t = i / sampleCount
-      const globalT = t * spine.segments.length
-      const segIdx = Math.min(Math.floor(globalT), spine.segments.length - 1)
-      const segT = Math.min(globalT - segIdx, 1)
-      spinePoints.push(evaluateAt(spine.segments[segIdx]!, segT))
+    const totalPoints = el.ribbon.spine.length
+
+    // Get all crossings relevant to this element, with over/under info
+    const elCrossings: Array<{ param: number; isOver: boolean }> = []
+
+    for (const c of crossings) {
+      if (c.pathAId === el.id) {
+        elCrossings.push({ param: c.paramA, isOver: c.overPath === 'A' })
+      } else if (c.pathBId === el.id) {
+        elCrossings.push({ param: c.paramB, isOver: c.overPath === 'B' })
+      }
     }
 
-    // Split into segments at crossing points, creating gaps at "under" crossings
-    const segments: Point[][] = []
-    const isOver: boolean[] = []
+    elCrossings.sort((a, b) => a.param - b.param)
 
-    // Compute approximate arc lengths to map param → point index
-    function paramToIndex(param: number): number {
-      return Math.round(param * sampleCount)
-    }
-
-    // Compute gap in param space (rough: gapSize / total length)
-    // Estimate total length
+    // Estimate total spine length to convert gapSize to param space
     let totalLen = 0
-    for (let i = 1; i < spinePoints.length; i++) {
-      const dx = spinePoints[i]!.x - spinePoints[i - 1]!.x
-      const dy = spinePoints[i]!.y - spinePoints[i - 1]!.y
+    for (let i = 1; i < totalPoints; i++) {
+      const dx = el.ribbon.spine[i]!.x - el.ribbon.spine[i - 1]!.x
+      const dy = el.ribbon.spine[i]!.y - el.ribbon.spine[i - 1]!.y
       totalLen += Math.sqrt(dx * dx + dy * dy)
     }
 
@@ -170,47 +150,41 @@ export function createInterlaceGaps(
       }
     }
 
-    // Build segments from the non-excluded ranges
     if (merged.length === 0) {
       // No gaps: single segment, all over
-      segments.push([...spinePoints])
-      isOver.push(true)
-    } else {
-      let currentSeg: Point[] = []
-      let currentIsOver = true
-
-      for (let i = 0; i <= sampleCount; i++) {
-        const t = i / sampleCount
-
-        // Check if this point is in an excluded range
-        let inGap = false
-        for (const r of merged) {
-          if (t >= r.start && t <= r.end) {
-            inGap = true
-            break
-          }
-        }
-
-        if (!inGap) {
-          currentSeg.push(spinePoints[i]!)
-        } else {
-          // We're in a gap
-          if (currentSeg.length > 0) {
-            segments.push(currentSeg)
-            isOver.push(currentIsOver)
-            currentSeg = []
-          }
-          currentIsOver = false // after a gap, we're in "under" territory (next segment resumes)
-        }
-      }
-
-      if (currentSeg.length > 0) {
-        segments.push(currentSeg)
-        isOver.push(true) // segments after gaps are "over" again
-      }
+      result.set(el.id, [{ startIdx: 0, endIdx: totalPoints, isOver: true }])
+      continue
     }
 
-    result.set(el.id, { segments, isOver })
+    // Determine over/under state at t=0 by checking the first crossing
+    // Before any crossing, the element is "over" if it's over at the first crossing
+    // or if there's no under-gap before it
+    let currentIsOver = true
+    if (elCrossings.length > 0) {
+      currentIsOver = elCrossings[0]!.isOver
+    }
+
+    // Build segments from the non-excluded ranges
+    const segments: RibbonSegment[] = []
+    let segStart = 0
+
+    for (const gap of merged) {
+      const gapStartIdx = Math.round(gap.start * (totalPoints - 1))
+      const gapEndIdx = Math.min(Math.round(gap.end * (totalPoints - 1)), totalPoints)
+
+      if (gapStartIdx > segStart) {
+        segments.push({ startIdx: segStart, endIdx: gapStartIdx, isOver: currentIsOver })
+      }
+      // After passing through an under-gap, the next segment is over
+      currentIsOver = true
+      segStart = gapEndIdx
+    }
+
+    if (segStart < totalPoints) {
+      segments.push({ startIdx: segStart, endIdx: totalPoints, isOver: currentIsOver })
+    }
+
+    result.set(el.id, segments)
   }
 
   return result

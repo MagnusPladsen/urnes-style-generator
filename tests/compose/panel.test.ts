@@ -62,12 +62,12 @@ describe('composePanel', () => {
     expect(serpents.length).toBe(baseConfig.elements.serpents)
   })
 
-  test('includes vines when configured', () => {
+  test('omits vines for authentic Urnes sparse aesthetic', () => {
     const rng = createRng(42)
     const elements = composePanel(rng, baseConfig)
 
     const vines = elements.filter(e => e.type === 'vine')
-    expect(vines.length).toBeGreaterThan(0)
+    expect(vines.length).toBe(0)
   })
 
   test('does not include vines when not configured', () => {

@@ -1,150 +1,232 @@
-import type { UrnesElement, CurvePath, Point } from '../core/types.ts'
+import type { UrnesElement, CubicBezier, CurvePath, Point } from '../core/types.ts'
 import type { Rng } from '../core/random.ts'
-import { pathFromPoints, evaluateAt, tangentAt } from '../core/bezier.ts'
+import { evaluateAt, tangentAt } from '../core/bezier.ts'
 
 /**
- * Generate a smooth S-curve path through waypoints that alternate
- * between the left and right sides of the bounds.
+ * Build a smooth S-curve looping spine using direct bezier segments.
+ * Each half-loop is one bezier: sweeping from center to a peak and back.
+ * Control points are placed at the peak to create round, smooth arcs.
  */
-function generateSinuousPath(
+function buildLoopingSpine(
   rng: Rng,
   bounds: { width: number; height: number },
-  segmentCount: number,
-  margin: number
-): Point[] {
-  const points: Point[] = []
+  loopCount: number,
+  amplitude: number,
+  xCenter: number
+): CurvePath {
   const w = bounds.width
   const h = bounds.height
-  const mx = w * margin
-  const my = h * margin
+  const mx = w * 0.08
+  const my = h * 0.05
+  const usableH = h - 2 * my
 
-  // Start point: roughly top-center area
-  const startX = mx + rng.range(0, w - 2 * mx)
-  const startY = my + rng.range(0, (h - 2 * my) * 0.15)
-  points.push({ x: startX, y: startY })
+  const segments: CubicBezier[] = []
+  const halfLoops = loopCount * 2
+  const yPerHalf = usableH / halfLoops
+  const swingX = w * amplitude * 0.4
 
-  // Alternate left/right offsets for sinuous flow
-  for (let i = 1; i < segmentCount; i++) {
-    const t = i / (segmentCount - 1)
-    const baseY = my + t * (h - 2 * my)
+  let currentX = xCenter
+  let currentY = my
 
-    // Alternate sides: even index → left, odd index → right
-    const side = i % 2 === 1 ? 1 : -1
-    const centerX = w / 2
-    const spread = (w / 2 - mx) * rng.range(0.5, 0.95)
-    const x = centerX + side * spread * rng.range(0.7, 1.0)
-    const y = baseY + rng.range(-h * 0.05, h * 0.05)
+  for (let i = 0; i < halfLoops; i++) {
+    const side = i % 2 === 0 ? 1 : -1
+    const nextY = currentY + yPerHalf
 
-    points.push({
-      x: Math.max(mx, Math.min(w - mx, x)),
-      y: Math.max(my, Math.min(h - my, y)),
+    // Peak X — how far the loop swings out
+    const peakX = xCenter + side * swingX * rng.range(0.85, 1.0)
+    const clampedPeakX = Math.max(mx, Math.min(w - mx, peakX))
+
+    // Next crossing point (slightly randomized around center)
+    const nextX = xCenter + rng.range(-w * 0.015, w * 0.015)
+    const clampedNextX = Math.max(mx, Math.min(w - mx, nextX))
+
+    // Control points at the peak Y-positions to create round arcs
+    segments.push({
+      start: { x: currentX, y: currentY },
+      cp1: { x: clampedPeakX, y: currentY + yPerHalf * 0.2 },
+      cp2: { x: clampedPeakX, y: nextY - yPerHalf * 0.2 },
+      end: { x: clampedNextX, y: nextY },
     })
+
+    currentX = clampedNextX
+    currentY = nextY
   }
 
-  return points
+  return { segments, closed: false }
 }
 
 /**
- * Generate a limb (thin vine-like child element) branching from a point on the spine.
+ * Build a spiral terminal as bezier segments.
+ * Tight inward-curling scroll — characteristic Urnes terminal.
  */
-function generateLimb(
-  rng: Rng,
+function buildSpiralTerminal(
+  startPoint: Point,
+  tangent: Point,
   bounds: { width: number; height: number },
-  attachPoint: Point,
-  attachTangent: Point,
-  limbIndex: number
-): UrnesElement {
-  const w = bounds.width
-  const h = bounds.height
+  turns: number,
+  maxRadius: number
+): CubicBezier[] {
+  const segments: CubicBezier[] = []
+  const len = Math.sqrt(tangent.x * tangent.x + tangent.y * tangent.y)
+  const tx = len > 1e-10 ? tangent.x / len : 0
+  const ty = len > 1e-10 ? tangent.y / len : 1
 
-  // Limb branches perpendicular-ish to the spine
-  const perpX = -attachTangent.y
-  const perpY = attachTangent.x
-  const len = Math.sqrt(perpX * perpX + perpY * perpY)
-  const pnx = len > 1e-10 ? perpX / len : 1
-  const pny = len > 1e-10 ? perpY / len : 0
+  // Use quarter-circle bezier approximation for clean arcs
+  const stepsPerTurn = 4
+  const totalSteps = Math.max(3, Math.ceil(turns * stepsPerTurn))
+  const startAngle = Math.atan2(ty, tx)
+  const kappa = 0.5522847498 // bezier approximation of quarter circle
 
-  // Choose which side to branch to
-  const side = rng.chance(0.5) ? 1 : -1
-  const limbLen = rng.range(w * 0.15, w * 0.28)
+  let prev = startPoint
 
-  const waypoints: Point[] = [attachPoint]
+  for (let i = 1; i <= totalSteps; i++) {
+    const t0 = (i - 1) / totalSteps
+    const t1 = i / totalSteps
+    const r0 = maxRadius * (1 - t0 * 0.9)
+    const r1 = maxRadius * (1 - t1 * 0.9)
+    const a0 = startAngle + t0 * turns * Math.PI * 2
+    const a1 = startAngle + t1 * turns * Math.PI * 2
 
-  // 2-3 waypoints that curve away from the body
-  const count = rng.int(2, 3)
-  for (let i = 1; i <= count; i++) {
-    const t = i / count
-    const baseX = attachPoint.x + pnx * side * limbLen * t
-    const baseY = attachPoint.y + pny * side * limbLen * t
-    waypoints.push({
-      x: Math.max(0, Math.min(w, baseX + rng.range(-w * 0.05, w * 0.05))),
-      y: Math.max(0, Math.min(h, baseY + rng.range(-h * 0.05, h * 0.05))),
+    const end = {
+      x: Math.max(0, Math.min(bounds.width, startPoint.x + Math.cos(a1) * r1)),
+      y: Math.max(0, Math.min(bounds.height, startPoint.y + Math.sin(a1) * r1)),
+    }
+
+    // Tangent-aligned control points for smooth arc
+    const arcLen = (a1 - a0) * (r0 + r1) / 2
+    const cpLen = arcLen * kappa / (Math.PI / 2) * 0.8
+
+    segments.push({
+      start: prev,
+      cp1: {
+        x: Math.max(0, Math.min(bounds.width, prev.x + Math.cos(a0 + Math.PI / 2) * cpLen)),
+        y: Math.max(0, Math.min(bounds.height, prev.y + Math.sin(a0 + Math.PI / 2) * cpLen)),
+      },
+      cp2: {
+        x: Math.max(0, Math.min(bounds.width, end.x - Math.cos(a1 + Math.PI / 2) * cpLen * 0.6)),
+        y: Math.max(0, Math.min(bounds.height, end.y - Math.sin(a1 + Math.PI / 2) * cpLen * 0.6)),
+      },
+      end,
     })
+
+    prev = end
   }
 
-  const limbWidthProfile = [3, 2, 1]
+  return segments
+}
+
+/**
+ * Generate a single hip spiral marker (small circle at a joint).
+ * Returns an UrnesElement that renders as a small spiral.
+ */
+function generateHipSpiral(
+  rng: Rng,
+  bounds: { width: number; height: number },
+  point: Point,
+  tangent: Point,
+  side: number,
+  index: number
+): UrnesElement {
+  const len = Math.sqrt(tangent.x * tangent.x + tangent.y * tangent.y)
+  const tx = len > 1e-10 ? tangent.x / len : 0
+  const ty = len > 1e-10 ? tangent.y / len : 1
+  const nx = -ty * side
+  const ny = tx * side
+
+  // Hip spiral sits perpendicular to the body
+  const offset = 12
+  const spiralCenter = {
+    x: point.x + nx * offset,
+    y: point.y + ny * offset,
+  }
+
+  const spiralTangent = { x: nx, y: ny }
+  const spiralSegs = buildSpiralTerminal(spiralCenter, spiralTangent, bounds, 1.0, 6)
+
+  if (spiralSegs.length === 0) {
+    return {
+      id: `hip-${index}`,
+      type: 'vine',
+      spine: { segments: [], closed: false },
+      widthProfile: [1],
+    }
+  }
 
   return {
-    id: `limb-${limbIndex}`,
+    id: `hip-${index}`,
     type: 'vine',
-    spine: pathFromPoints(waypoints, false),
-    widthProfile: limbWidthProfile,
+    spine: { segments: spiralSegs, closed: false },
+    widthProfile: Array(spiralSegs.length + 2).fill(1.5),
   }
 }
 
 /**
- * Generate the dominant great beast: large, flowing S-curve body.
+ * Generate the great beast: flowing figure-8 body with
+ * spiral terminal, hip spirals at "leg joints", and head with lappets.
+ *
+ * Authentic Urnes rules:
+ * - Wide ribbon body (~10-14px)
+ * - Smooth even outlines with gradual taper
+ * - 2-3 figure-8 loops filling the panel
+ * - Hip spirals at 4 "joint" positions
+ * - Head at start with almond eye
  */
 export function generateGreatBeast(
   rng: Rng,
   bounds: { width: number; height: number },
   config?: { segments?: number }
 ): UrnesElement {
-  const margin = 0.15
-  const segmentCount = config?.segments ?? rng.int(5, 8)
+  const loopCount = config?.segments ?? rng.int(2, 3)
+  const centerX = bounds.width * (0.5 + rng.range(-0.04, 0.04))
 
-  const waypoints = generateSinuousPath(rng, bounds, segmentCount, margin)
-  const spine = pathFromPoints(waypoints, false)
+  const spine = buildLoopingSpine(
+    rng, bounds, loopCount,
+    rng.range(0.7, 0.95),
+    centerX
+  )
 
-  // Width profile: thick in middle, tapering at head and tail
-  const profilePoints = segmentCount + 2
+  // Add spiral terminal at tail
+  const lastSeg = spine.segments[spine.segments.length - 1]!
+  const tailTangent = tangentAt(lastSeg, 1)
+  spine.segments.push(...buildSpiralTerminal(lastSeg.end, tailTangent, bounds, 1.5, 16))
+
+  // Width profile
+  const totalSegs = spine.segments.length
+  const profileLen = totalSegs + 3
   const widthProfile: number[] = []
-  for (let i = 0; i < profilePoints; i++) {
-    const t = i / (profilePoints - 1)
-    // Bell curve: peak at center, taper at ends
-    const center = 0.45 + rng.range(-0.05, 0.05)
-    const distance = Math.abs(t - center)
-    if (t < 0.12) {
-      // Head taper
-      const headT = t / 0.12
-      widthProfile.push(4 + headT * 2 + rng.range(0, 2))
-    } else if (t > 0.88) {
-      // Tail taper
-      const tailT = (1 - t) / 0.12
-      widthProfile.push(1 + tailT * 3 + rng.range(0, 1))
+  const bodyWidth = 11 + rng.range(0, 3)
+
+  for (let i = 0; i < profileLen; i++) {
+    const t = i / (profileLen - 1)
+    if (t < 0.06) {
+      // Head: taper from neck width
+      widthProfile.push(5 + (t / 0.06) * (bodyWidth - 5))
+    } else if (t > 0.75) {
+      // Tail: gradual taper into spiral
+      const tailT = (t - 0.75) / 0.25
+      widthProfile.push(Math.max(1.5, bodyWidth * (1 - tailT * 0.88)))
     } else {
-      // Body
-      const bodyWidth = 10 + rng.range(0, 4) - distance * 8
-      widthProfile.push(Math.max(6, bodyWidth))
+      // Body: even width (Urnes characteristic)
+      widthProfile.push(bodyWidth)
     }
   }
 
-  // Generate 1-2 limbs
+  // Generate hip spirals at 4 "joint" positions along the body
   const children: UrnesElement[] = []
-  const limbCount = rng.int(1, 2)
-  for (let i = 0; i < limbCount; i++) {
-    // Attach limb at roughly 1/3 or 2/3 along the spine
-    const attachT = 0.25 + i * 0.35 + rng.range(-0.05, 0.05)
-    const nSegs = spine.segments.length
-    const globalT = attachT * nSegs
+  const jointPositions = [0.15, 0.35, 0.55, 0.7]
+  const nSegs = spine.segments.length
+
+  for (let i = 0; i < 4 && nSegs > 0; i++) {
+    const t = jointPositions[i]!
+    const globalT = t * nSegs
     const segIdx = Math.min(Math.floor(globalT), nSegs - 1)
     const segT = Math.min(globalT - segIdx, 1)
     const seg = spine.segments[segIdx]!
+    const pt = evaluateAt(seg, segT)
+    const tan = tangentAt(seg, segT)
+    const side = i % 2 === 0 ? 1 : -1
 
-    const attachPoint = evaluateAt(seg, segT)
-    const attachTangent = tangentAt(seg, segT)
-
-    children.push(generateLimb(rng, bounds, attachPoint, attachTangent, i))
+    children.push(generateHipSpiral(rng, bounds, pt, tan, side, i))
   }
 
   return {
@@ -158,62 +240,51 @@ export function generateGreatBeast(
 }
 
 /**
- * Generate a smaller secondary serpent.
+ * Generate a serpent that weaves through the composition.
+ *
+ * Authentic Urnes rules:
+ * - Narrow ribbon body (~4-6px) — clearly thinner than beast
+ * - Same smooth flowing figure-8 structure
+ * - Offset from beast to create crossing/interlacing
+ * - Spiral terminal at tail
+ * - Head shown biting the beast
  */
 export function generateSerpent(
   rng: Rng,
   bounds: { width: number; height: number },
   index: number
 ): UrnesElement {
-  const margin = 0.12
-  const segmentCount = rng.int(3, 5)
+  const loopCount = rng.int(2, 3)
+  // Offset to create interlacing with the beast
+  const offsetBias = index % 2 === 0 ? 0.15 : -0.15
+  const centerX = bounds.width * (0.5 + offsetBias + rng.range(-0.03, 0.03))
 
-  const w = bounds.width
-  const h = bounds.height
-  const mx = w * margin
-  const my = h * margin
+  const spine = buildLoopingSpine(
+    rng, bounds, loopCount,
+    rng.range(0.55, 0.85),
+    centerX
+  )
 
-  // Serpents are smaller and placed randomly in the space
-  const waypoints: Point[] = []
+  // Spiral terminal
+  const lastSeg = spine.segments[spine.segments.length - 1]!
+  const tailTangent = tangentAt(lastSeg, 1)
+  spine.segments.push(...buildSpiralTerminal(lastSeg.end, tailTangent, bounds, 1.0, 10))
 
-  // Start from a random edge-ish position
-  const startX = mx + rng.range(0, w - 2 * mx)
-  const startY = my + rng.range(0, h - 2 * my)
-  waypoints.push({ x: startX, y: startY })
-
-  for (let i = 1; i < segmentCount; i++) {
-    const t = i / (segmentCount - 1)
-    const prev = waypoints[waypoints.length - 1]!
-
-    // Gentle curves, less dramatic than the great beast
-    const angle = rng.range(-Math.PI * 0.6, Math.PI * 0.6)
-    const dist = w * rng.range(0.12, 0.22)
-    const x = prev.x + Math.cos(angle) * dist
-    const y = prev.y + Math.sin(angle) * dist
-
-    waypoints.push({
-      x: Math.max(mx, Math.min(w - mx, x)),
-      y: Math.max(my, Math.min(h - my, y)),
-    })
-  }
-
-  const spine = pathFromPoints(waypoints, false)
-
-  // Width profile: thinner body, 4-8 max
-  const profilePoints = segmentCount + 2
+  // Thinner ribbon — Urnes uses exactly two widths
+  const totalSegs = spine.segments.length
+  const profileLen = totalSegs + 3
   const widthProfile: number[] = []
-  for (let i = 0; i < profilePoints; i++) {
-    const t = i / (profilePoints - 1)
-    if (t < 0.15) {
-      // Head taper
-      const headT = t / 0.15
-      widthProfile.push(2 + headT * 2 + rng.range(0, 1))
-    } else if (t > 0.85) {
-      // Tail taper
-      const tailT = (1 - t) / 0.15
-      widthProfile.push(1 + tailT * 2 + rng.range(0, 1))
+  const bodyWidth = 4 + rng.range(0, 2)
+
+  for (let i = 0; i < profileLen; i++) {
+    const t = i / (profileLen - 1)
+    if (t < 0.08) {
+      widthProfile.push(2 + (t / 0.08) * (bodyWidth - 2))
+    } else if (t > 0.82) {
+      const tailT = (t - 0.82) / 0.18
+      widthProfile.push(Math.max(1, bodyWidth * (1 - tailT * 0.8)))
     } else {
-      widthProfile.push(4 + rng.range(0, 4))
+      widthProfile.push(bodyWidth)
     }
   }
 

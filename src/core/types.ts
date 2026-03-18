@@ -76,7 +76,7 @@ export const DEFAULT_CONFIG: GeneratorConfig = {
   complexity: 5,
   elements: {
     greatBeast: true,
-    serpents: 1,
+    serpents: 2,
     vines: true,
   },
   style: {

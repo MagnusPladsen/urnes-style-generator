@@ -3,8 +3,9 @@ import { DEFAULT_CONFIG } from './core/types.ts'
 import { createRng } from './core/random.ts'
 import { generateRibbon } from './core/ribbon.ts'
 import { evaluateAt, tangentAt } from './core/bezier.ts'
-import { renderRibbon, renderHead, renderSvg, pointsToSmoothPath } from './render/svg.ts'
+import { renderRibbon, renderHead, renderSvg } from './render/svg.ts'
 import { assignCrossings, createInterlaceGaps } from './interlace/weave.ts'
+import type { RibbonSegment } from './interlace/weave.ts'
 import { composePanel } from './compose/panel.ts'
 import { composeBorder } from './compose/border.ts'
 
@@ -75,59 +76,30 @@ function getSpineEndTangent(el: UrnesElement): { x: number; y: number } {
 }
 
 /**
- * Render a single element's ribbon using interlace gap segments.
- * Returns an array of SVG path strings, grouped by over/under.
+ * Render ribbon segments for an element using index-based slicing.
+ * Returns SVG path strings for segments matching the requested over/under state.
  */
-function renderElementRibbon(
+function renderElementSegments(
   el: UrnesElement,
-  segments: { x: number; y: number }[][],
-  isOverArr: boolean[],
+  segments: RibbonSegment[],
   style: GeneratorConfig['style'],
   onlyOver: boolean
 ): string[] {
   const parts: string[] = []
   const fillColor = style.fill ? style.fillColor : 'none'
+  const ribbon = el.ribbon
+  if (!ribbon) return parts
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]!
-    const isOver = isOverArr[i] ?? true
+  for (const seg of segments) {
+    if (seg.isOver !== onlyOver) continue
+    if (seg.endIdx - seg.startIdx < 2) continue
 
-    if (onlyOver !== isOver) continue
-    if (seg.length < 2) continue
-
-    // Build a simplified ribbon from the segment points (spine-only segments)
-    // We need to generate a proper ribbon from these spine points
-    // by computing the width profile subset that matches this segment position
-    const spineTotal = el.spine.segments.length * 60 // approximate total sample count
-    const ribbon = el.ribbon
-
-    if (!ribbon) continue
-
-    // Find the corresponding left/right points from the full ribbon
-    // The segment points are spine samples; map them to ribbon indices
-    const totalSpinePoints = ribbon.spine.length
-    const segLeft: { x: number; y: number }[] = []
-    const segRight: { x: number; y: number }[] = []
-
-    for (const pt of seg) {
-      // Find closest spine point index
-      let bestIdx = 0
-      let bestDist = Infinity
-      for (let j = 0; j < totalSpinePoints; j++) {
-        const sp = ribbon.spine[j]!
-        const dx = sp.x - pt.x
-        const dy = sp.y - pt.y
-        const d = dx * dx + dy * dy
-        if (d < bestDist) {
-          bestDist = d
-          bestIdx = j
-        }
-      }
-      segLeft.push(ribbon.left[bestIdx]!)
-      segRight.push(ribbon.right[bestIdx]!)
+    const segRibbon = {
+      left: ribbon.left.slice(seg.startIdx, seg.endIdx),
+      right: ribbon.right.slice(seg.startIdx, seg.endIdx),
+      spine: ribbon.spine.slice(seg.startIdx, seg.endIdx),
     }
 
-    const segRibbon = { left: segLeft, right: segRight, spine: seg }
     parts.push(
       renderRibbon(segRibbon, {
         fill: fillColor,
@@ -163,9 +135,10 @@ export function generate(userConfig?: Partial<GeneratorConfig>): string {
   }
 
   // Generate ribbons for all elements (including children/limbs)
-  const sampleCount = Math.max(40, config.complexity * 8)
-
+  // Scale sample count to spine complexity for proper resolution
   function buildRibbon(el: UrnesElement): void {
+    const segCount = el.spine.segments.length
+    const sampleCount = Math.max(40, segCount * 10)
     el.ribbon = generateRibbon(el.spine, el.widthProfile, sampleCount)
     if (el.children) {
       for (const child of el.children) {
@@ -193,7 +166,7 @@ export function generate(userConfig?: Partial<GeneratorConfig>): string {
 
   // Run interlace engine
   const crossings = assignCrossings(allElements)
-  const gapMap = createInterlaceGaps(allElements, crossings, config.style.gapSize)
+  const gapMap = createInterlaceGaps(allElements, crossings, config.style.gapSize, 0)
 
   const fillColor = config.style.fill ? config.style.fillColor : 'none'
   const styleArgs = {
@@ -210,26 +183,22 @@ export function generate(userConfig?: Partial<GeneratorConfig>): string {
   function processElement(el: UrnesElement): void {
     if (!el.ribbon) return
 
-    const gapData = gapMap.get(el.id)
+    const segments = gapMap.get(el.id)
 
-    if (!gapData || gapData.segments.length === 0) {
+    if (!segments || segments.length === 0) {
       // No interlace data: render full ribbon
       overParts.push(renderRibbon(el.ribbon, styleArgs))
     } else {
-      // Render under segments first (they will be drawn behind)
-      const underSegs = renderElementRibbon(el, gapData.segments, gapData.isOver, config.style, false)
-      underParts.push(...underSegs)
-
-      // Render over segments
-      const overSegs = renderElementRibbon(el, gapData.segments, gapData.isOver, config.style, true)
-      overParts.push(...overSegs)
+      // Render under segments first (drawn behind), then over segments
+      underParts.push(...renderElementSegments(el, segments, config.style, false))
+      overParts.push(...renderElementSegments(el, segments, config.style, true))
     }
 
     // Render head if element has one
     if (el.headPosition && el.spine.segments.length > 0) {
       const headSize = el.type === 'great-beast'
-        ? Math.max(config.style.strokeWidth * 4, 18)
-        : Math.max(config.style.strokeWidth * 3, 12)
+        ? Math.max(config.style.strokeWidth * 6, 28)
+        : Math.max(config.style.strokeWidth * 4, 18)
 
       if (el.headPosition === 'start') {
         const pos = getSpineStartPoint(el)

@@ -56,12 +56,11 @@ describe('generateGreatBeast', () => {
     expect(beast.headPosition).toBe('start')
   })
 
-  test('has children (limbs)', () => {
+  test('has hip spiral children at joint positions', () => {
     const rng = createRng(42)
     const beast = generateGreatBeast(rng, bounds)
     expect(beast.children).toBeDefined()
-    expect(beast.children!.length).toBeGreaterThanOrEqual(1)
-    expect(beast.children!.length).toBeLessThanOrEqual(2)
+    expect(beast.children!.length).toBe(4)
   })
 
   test('is deterministic with same seed', () => {
