@@ -1,0 +1,21 @@
+{
+  "name": "urnes-style-generator",
+  "module": "src/generator.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "generate": "bun run src/cli.ts",
+    "dev": "bun --hot src/serve.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  },
+  "bin": {
+    "urnes": "src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
