@@ -84,7 +84,7 @@ export const DEFAULT_CONFIG: GeneratorConfig = {
     gapSize: 6,
     fill: true,
     tapering: true,
-    strokeColor: '#1a1a1a',
-    fillColor: '#1a1a1a',
+    strokeColor: '#c8a45a',
+    fillColor: '#c8a45a',
   },
 }

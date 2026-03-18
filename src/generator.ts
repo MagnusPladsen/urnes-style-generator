@@ -265,6 +265,7 @@ export function generate(userConfig?: Partial<GeneratorConfig>): string {
     width: config.width,
     height: config.height,
     style: config.style,
+    background: '#1a1a1a',
   }
 
   return renderSvg(content, renderConfig)
